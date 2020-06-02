@@ -1,10 +1,10 @@
-#!/usr/bin/env python
-from __future__ import print_function
+#!/usr/bin/env python3
+
 import sys
 import time
 import requests
 import json
-import StringIO
+import io
 
 def flash_release(path=None, st_serial=None):
   from panda import Panda, PandaDFU, ESPROM, CesantaFlasher
@@ -29,7 +29,7 @@ def flash_release(path=None, st_serial=None):
     url = json.loads(r.text)['url']
     r = requests.get(url)
     print("Fetching firmware from %s" % url)
-    path = StringIO.StringIO(r.content)
+    path = io.StringIO(r.content)
 
   zf = ZipFile(path)
   zf.printdir()
@@ -65,19 +65,22 @@ def flash_release(path=None, st_serial=None):
   panda.close()
 
   # flashing ESP
-  status("4. Flashing ESP (slow!)")
-  align = lambda x, sz=0x1000: x+"\xFF"*((sz-len(x)) % sz)
-  esp = ESPROM(st_serial)
-  esp.connect()
-  flasher = CesantaFlasher(esp, 230400)
-  flasher.flash_write(0x0, align(code_boot_15), True)
-  flasher.flash_write(0x1000, align(code_user1), True)
-  flasher.flash_write(0x81000, align(code_user2), True)
-  flasher.flash_write(0x3FE000, "\xFF"*0x1000)
-  flasher.boot_fw()
-  del flasher
-  del esp
-  time.sleep(1)
+  if panda.is_white():
+    status("4. Flashing ESP (slow!)")
+    align = lambda x, sz=0x1000: x+"\xFF"*((sz-len(x)) % sz)
+    esp = ESPROM(st_serial)
+    esp.connect()
+    flasher = CesantaFlasher(esp, 230400)
+    flasher.flash_write(0x0, align(code_boot_15), True)
+    flasher.flash_write(0x1000, align(code_user1), True)
+    flasher.flash_write(0x81000, align(code_user2), True)
+    flasher.flash_write(0x3FE000, "\xFF"*0x1000)
+    flasher.boot_fw()
+    del flasher
+    del esp
+    time.sleep(1)
+  else:
+    status("4. No ESP in non-white panda")
 
   # check for connection
   status("5. Verifying version")
@@ -89,7 +92,7 @@ def flash_release(path=None, st_serial=None):
 
   # done!
   status("6. Success!")
-  
+
 if __name__ == "__main__":
   flash_release(*sys.argv[1:])
 

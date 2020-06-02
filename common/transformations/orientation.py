@@ -13,11 +13,11 @@ Supports both x2y and y_from_x format (y_from_x preferred!).
 def euler2quat(eulers):
   eulers = array(eulers)
   if len(eulers.shape) > 1:
-    output_shape = (-1,4)
+    output_shape = (-1, 4)
   else:
     output_shape = (4,)
   eulers = np.atleast_2d(eulers)
-  gamma, theta, psi = eulers[:,0],  eulers[:,1],  eulers[:,2]
+  gamma, theta, psi = eulers[:, 0],  eulers[:, 1],  eulers[:, 2]
 
   q0 = np.cos(gamma / 2) * np.cos(theta / 2) * np.cos(psi / 2) + \
        np.sin(gamma / 2) * np.sin(theta / 2) * np.sin(psi / 2)
@@ -29,8 +29,8 @@ def euler2quat(eulers):
        np.sin(gamma / 2) * np.sin(theta / 2) * np.cos(psi / 2)
 
   quats = array([q0, q1, q2, q3]).T
-  for i in xrange(len(quats)):
-    if quats[i,0] < 0:
+  for i in range(len(quats)):
+    if quats[i, 0] < 0:
       quats[i] = -quats[i]
   return quats.reshape(output_shape)
 
@@ -38,11 +38,11 @@ def euler2quat(eulers):
 def quat2euler(quats):
   quats = array(quats)
   if len(quats.shape) > 1:
-    output_shape = (-1,3)
+    output_shape = (-1, 3)
   else:
     output_shape = (3,)
   quats = np.atleast_2d(quats)
-  q0, q1, q2, q3 = quats[:,0], quats[:,1], quats[:,2], quats[:,3]
+  q0, q1, q2, q3 = quats[:, 0], quats[:, 1], quats[:, 2], quats[:, 3]
 
   gamma = np.arctan2(2 * (q0 * q1 + q2 * q3), 1 - 2 * (q1**2 + q2**2))
   theta = np.arcsin(2 * (q0 * q2 - q3 * q1))
@@ -99,9 +99,9 @@ def rot2quat(rots):
   K3[:, 3, 2] = K3[:, 2, 3]
   K3[:, 3, 3] = (rots[:, 0, 0] + rots[:, 1, 1] + rots[:, 2, 2]) / 3.0
   q = np.empty((len(rots), 4))
-  for i in xrange(len(rots)):
+  for i in range(len(rots)):
     _, eigvecs = linalg.eigh(K3[i].T)
-    eigvecs = eigvecs[:,3:]
+    eigvecs = eigvecs[:, 3:]
     q[i, 0] = eigvecs[-1]
     q[i, 1:] = -eigvecs[:-1].flatten()
     if q[i, 0] < 0:
@@ -124,8 +124,8 @@ def rot2euler(rots):
 quats_from_rotations = rot2quat
 quat_from_rot = rot2quat
 rotations_from_quats = quat2rot
-rot_from_quat= quat2rot
-rot_from_quat= quat2rot
+rot_from_quat = quat2rot
+rot_from_quat = quat2rot
 euler_from_rot = rot2euler
 euler_from_quat = quat2euler
 rot_from_euler = euler2rot
@@ -154,9 +154,9 @@ def rot_matrix(roll, pitch, yaw):
   cr, sr = np.cos(roll), np.sin(roll)
   cp, sp = np.cos(pitch), np.sin(pitch)
   cy, sy = np.cos(yaw), np.sin(yaw)
-  rr = array([[1,0,0],[0, cr,-sr],[0, sr, cr]])
-  rp = array([[cp,0,sp],[0, 1,0],[-sp, 0, cp]])
-  ry = array([[cy,-sy,0],[sy, cy,0],[0, 0, 1]])
+  rr = array([[1, 0, 0], [0, cr, -sr], [0, sr, cr]])
+  rp = array([[cp, 0, sp], [0, 1, 0], [-sp, 0, cp]])
+  ry = array([[cy, -sy, 0], [sy, cy, 0], [0, 0, 1]])
   return ry.dot(rp.dot(rr))
 
 
