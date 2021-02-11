@@ -4,42 +4,16 @@ from opendbc.can.can_define import CANDefine
 from selfdrive.car.interfaces import CarStateBase
 from opendbc.can.parser import CANParser
 from selfdrive.config import Conversions as CV
-from selfdrive.car.toyota.values import CAR, DBC, STEER_THRESHOLD, TSS2_CAR, NO_STOP_TIMER_CAR
-from selfdrive.swaglog import cloudlog
-from common.realtime import DT_CTRL, sec_since_boot
-from common.params import Params, put_nonblocking #for testing with new car having accurate torque steer - delete
+from selfdrive.car.toyota.values import CAR, DBC, STEER_THRESHOLD, TSS2_CAR, NO_DSU_CAR, NO_STOP_TIMER_CAR
+
 
 class CarState(CarStateBase):
   def __init__(self, CP):
     super().__init__(CP)
     can_define = CANDefine(DBC[CP.carFingerprint]['pt'])
     self.shifter_values = can_define.dv["GEAR_PACKET"]['GEAR']
-
-    # All TSS2 car have the accurate sensor
-    self.accurate_steer_angle_seen = CP.carFingerprint in TSS2_CAR
-
-    # On NO_DSU cars but not TSS2 cars the cp.vl["STEER_TORQUE_SENSOR"]['STEER_ANGLE']
-    # is zeroed to where the steering angle is at start.
-    # Need to apply an offset as soon as the steering angle measurements are both received
-    self.needs_angle_offset_torque = CP.carFingerprint not in TSS2_CAR #offset only if needed
-    self.needs_angle_offset_zss = True #ZSS always needs offset
-    self.angle_offset_zss = 0.
-    self.angle_offset_torque = 0.
-    self.stock_steer_value = 0.
-    self.zorro_steer_value = 0.
-    self.torque_steer_value = 0.
-    self.counter_value = 0
-    self.counter_value_saved = 0
-    self.zorro_steer_available = False
-    self.cruise_active_previous = False
-    self.out_of_tolerance_counter = 0
-    self.steertype = 0 #for debug purposes. 0-undefined, 1-stock, 2-torque, 3-zorro
-    self.count = 0
-
-    # for testing with newer car having accurate torque steer and control usage via settings
-    # 'metrics' option.
-    params = Params()
-    self.no_torque_steer_old_car = params.get("IsMetric", encoding='utf8') == "1"
+    self.angle_offset = 0.
+    self.init_angle_offset = False
 
   def update(self, cp, cp_cam):
     ret = car.CarState.new_message()
@@ -66,91 +40,18 @@ class CarState(CarStateBase):
 
     ret.standstill = ret.vEgoRaw < 0.001
 
-    self.stock_steer_value = cp.vl["STEER_ANGLE_SENSOR"]['STEER_ANGLE'] + cp.vl["STEER_ANGLE_SENSOR"]['STEER_FRACTION']
-    # Some newer models have a more accurate angle measurement in the TORQUE_SENSOR message. Use if non-zero
-    if abs(cp.vl["STEER_TORQUE_SENSOR"]['STEER_ANGLE']) > 1e-3:
-      self.accurate_steer_angle_seen = True
-
-    if self.no_torque_steer_old_car:  #for testing with new car having accurate torque steer
-      self.accurate_steer_angle_seen = False #for testing with new car having accurate torque steer
-
-    if not self.cruise_active_previous and bool(cp.vl["PCM_CRUISE"]['CRUISE_ACTIVE']):
-      self.needs_angle_offset_zss = True # cruise was just activated, so allow offset to be recomputed; this will also allow re-join if needed
-      self.out_of_tolerance_counter = 0
-
-    self.cruise_active_previous = bool(cp.vl["PCM_CRUISE"]['CRUISE_ACTIVE'])
-
-    #compute offset for torque steer
-    if self.accurate_steer_angle_seen:
-      if self.needs_angle_offset_torque:
-        angle_wheel = cp.vl["STEER_ANGLE_SENSOR"]['STEER_ANGLE'] + cp.vl["STEER_ANGLE_SENSOR"]['STEER_FRACTION']
-        if (abs(angle_wheel) > 1e-3 and abs(cp.vl["STEER_TORQUE_SENSOR"]['STEER_ANGLE']) > 1e-3):
-          self.needs_angle_offset_torque = False
-          self.angle_offset_torque = cp.vl["STEER_TORQUE_SENSOR"]['STEER_ANGLE'] - angle_wheel
-      self.torque_steer_value = cp.vl["STEER_TORQUE_SENSOR"]['STEER_ANGLE'] - self.angle_offset_torque
-
-    if self.CP.hasZss:
-      #check for loss of communications every 300msec
-      if (self.count % int(0.3 / DT_CTRL)) == 0:
-        self.counter_value = cp.vl["SECONDARY_STEER_ANGLE"]['COUNTER'] #currently sender updates every 100msec
-        if self.counter_value != self.counter_value_saved: #updated data received so communications look good
-          if not self.zorro_steer_available:
-            self.needs_angle_offset_zss = True #allows to rejoin if zorro steer toggles from 'not available' to 'available' is detected
-          self.zorro_steer_available = True
-        else:
-          self.zorro_steer_available = False  #loss of communications detected so stop using zorro steer
-        self.counter_value_saved = self.counter_value
-
-      #compute offset for zorro steer - always needed during init and when re-joining
-      if self.zorro_steer_available and self.needs_angle_offset_zss:
-        angle_wheel = cp.vl["STEER_ANGLE_SENSOR"]['STEER_ANGLE'] + cp.vl["STEER_ANGLE_SENSOR"]['STEER_FRACTION']
-        if (abs(angle_wheel) > 1e-3 and abs(cp.vl["SECONDARY_STEER_ANGLE"]['ZORRO_STEER']) > 1e-3):
-          self.needs_angle_offset_zss = False
-          self.angle_offset_zss = cp.vl["SECONDARY_STEER_ANGLE"]['ZORRO_STEER'] - angle_wheel
-      self.zorro_steer_value = cp.vl["SECONDARY_STEER_ANGLE"]['ZORRO_STEER'] - self.angle_offset_zss
-
-
-      #default to stock if 1) too many instances of steering being out of tolerance; something is not right
-      #                    2) zorro steer is not available
-      #                    3) zorro steer offset has not been computed
-      if self.out_of_tolerance_counter < 10 and self.zorro_steer_available and not self.needs_angle_offset_zss:
-        #check if zorro steer is out of tolerance; 2.5 degrees works fine with 2020 Prius Prime
-        if abs(self.stock_steer_value - self.zorro_steer_value) > 2.5:
-          ret.steeringAngle = self.stock_steer_value
-          self.steertype = 1
-          if bool(cp.vl["PCM_CRUISE"]['CRUISE_ACTIVE']):
-            self.out_of_tolerance_counter = self.out_of_tolerance_counter + 1 #shoud not get here too often with cruis active
-        else:
-          ret.steeringAngle = self.zorro_steer_value
-          self.steertype = 3
-      else:
-        ret.steeringAngle = self.stock_steer_value
-        self.steertype = 1
-    elif self.accurate_steer_angle_seen:
-      ret.steeringAngle = self.torque_steer_value
-      self.steertype = 2
+    if self.CP.carFingerprint in TSS2_CAR:
+      ret.steeringAngle = cp.vl["STEER_TORQUE_SENSOR"]['STEER_ANGLE']
+    elif True:
+      # cp.vl["STEER_TORQUE_SENSOR"]['STEER_ANGLE'] is zeroed to where the steering angle is at start.
+      # need to apply an offset as soon as the steering angle measurements are both received
+      ret.steeringAngle = cp.vl["SECONDARY_STEER_ANGLE"]['ZORRO_STEER'] - self.angle_offset
+      angle_wheel = cp.vl["STEER_ANGLE_SENSOR"]['STEER_ANGLE'] + cp.vl["STEER_ANGLE_SENSOR"]['STEER_FRACTION']
+      if not self.init_angle_offset:
+        self.init_angle_offset = True
+        self.angle_offset = ret.steeringAngle - angle_wheel
     else:
-      ret.steeringAngle = self.stock_steer_value
-      self.steertype = 1
-
-    if (self.count % int(1.0 / DT_CTRL)) == 0:
-      cloudlog.info("*** Zorro       *** %s" % self.zorro_steer_value)
-      cloudlog.info("*** Torque      *** %s" % self.torque_steer_value)
-      cloudlog.info("*** Stock       *** %s" % self.stock_steer_value)
-      cloudlog.info("*** Num of OTs  *** %s" % self.out_of_tolerance_counter)
-      cloudlog.info("*** Counter     *** %s" % self.counter_value)
-      cloudlog.info("*** OP is Using *** %s" % ret.steeringAngle)
-      steertypeText = "Undefined" #should never happen
-      if self.steertype == 1:
-        steertypeText = "Stock"
-      elif self.steertype == 2:
-        steertypeText = "Torque"
-      elif self.steertype == 3:
-        steertypeText = "Zorro"
-      cloudlog.info("====================================")
-      cloudlog.info("******* Using Steer Type: ******* %s" % steertypeText)
-      cloudlog.info("====================================")
-
+      ret.steeringAngle = cp.vl["STEER_ANGLE_SENSOR"]['STEER_ANGLE'] + cp.vl["STEER_ANGLE_SENSOR"]['STEER_FRACTION']
     ret.steeringRate = cp.vl["STEER_ANGLE_SENSOR"]['STEER_RATE']
     can_gear = int(cp.vl["GEAR_PACKET"]['GEAR'])
     ret.gearShifter = self.parse_gear_shifter(self.shifter_values.get(can_gear, None))
@@ -196,8 +97,6 @@ class CarState(CarStateBase):
       ret.leftBlindspot = (cp.vl["BSM"]['L_ADJACENT'] == 1) or (cp.vl["BSM"]['L_APPROACHING'] == 1)
       ret.rightBlindspot = (cp.vl["BSM"]['R_ADJACENT'] == 1) or (cp.vl["BSM"]['R_APPROACHING'] == 1)
 
-    self.count = self.count + 1
-
     return ret
 
   @staticmethod
@@ -226,7 +125,6 @@ class CarState(CarStateBase):
       ("GAS_RELEASED", "PCM_CRUISE", 1),
       ("STEER_TORQUE_DRIVER", "STEER_TORQUE_SENSOR", 0),
       ("STEER_TORQUE_EPS", "STEER_TORQUE_SENSOR", 0),
-      ("STEER_ANGLE", "STEER_TORQUE_SENSOR", 0),
       ("TURN_SIGNALS", "STEERING_LEVERS", 3),   # 3 is no blinkers
       ("LKA_STATE", "EPS_STATUS", 0),
       ("BRAKE_LIGHTS_ACC", "ESP_CONTROL", 0),
@@ -253,11 +151,12 @@ class CarState(CarStateBase):
       signals.append(("LOW_SPEED_LOCKOUT", "PCM_CRUISE_2", 0))
       checks.append(("PCM_CRUISE_2", 33))
 
-    if CP.carFingerprint == CAR.PRIUS:
+    if CP.carFingerprint in NO_DSU_CAR:
+      signals += [("STEER_ANGLE", "STEER_TORQUE_SENSOR", 0)]
+
+    if True:
       signals += [("STATE", "AUTOPARK_STATUS", 0)]
-    if CP.hasZss:
       signals += [("ZORRO_STEER", "SECONDARY_STEER_ANGLE", 0)]
-      signals += [("COUNTER", "SECONDARY_STEER_ANGLE", 0)]
 
     # add gas interceptor reading if we are using it
     if CP.enableGasInterceptor:
