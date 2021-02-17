@@ -21,7 +21,7 @@ class CarState(CarStateBase):
     # is zeroed to where the steering angle is at start.
     # Need to apply an offset as soon as the steering angle measurements are both received
     self.needs_angle_offset_torque = CP.carFingerprint not in TSS2_CAR #offset only if needed
-    self.needs_angle_offset_zss = True #ZSS alwasy needs offset
+    self.needs_angle_offset_zss = True #ZSS always needs offset
     self.angle_offset_zss = 0.
     self.angle_offset_torque = 0.
     self.stock_steer_value = 0.
@@ -66,6 +66,7 @@ class CarState(CarStateBase):
 
     if self.cruise_active and not self.cruise_active_previous:
       self.needs_angle_offset_zss = True # cruise was just activated, so allow offset to be recomputed
+      self.out_of_tolerance_counter = 0 # Allow ZSS re-use after disengage and re-engage
     self.cruise_active_previous = self.cruise_active
 
     #compute offset for torque steer
