@@ -1,58 +1,44 @@
-#!/usr/bin/env python
-import gc
-
+#!/usr/bin/env python3
 from cereal import car
 from common.params import Params
-from common.realtime import set_realtime_priority
+from common.realtime import Priority, config_realtime_process
 from selfdrive.swaglog import cloudlog
-from selfdrive.controls.lib.planner import Planner
-from selfdrive.controls.lib.vehicle_model import VehicleModel
-from selfdrive.controls.lib.pathplanner import PathPlanner
-import selfdrive.messaging as messaging
+from selfdrive.controls.lib.longitudinal_planner import Planner
+from selfdrive.controls.lib.lateral_planner import LateralPlanner
+import cereal.messaging as messaging
 
 
-def plannerd_thread():
-  gc.disable()
+def plannerd_thread(sm=None, pm=None):
 
-  # start the loop
-  set_realtime_priority(2)
-
-  params = Params()
-
-  # Get FCW toggle from settings
-  fcw_enabled = params.get("IsFcwEnabled") == "1"
+  config_realtime_process(2, Priority.CTRL_LOW)
 
   cloudlog.info("plannerd is waiting for CarParams")
   CP = car.CarParams.from_bytes(Params().get("CarParams", block=True))
   cloudlog.info("plannerd got CarParams: %s", CP.carName)
 
-  PL = Planner(CP, fcw_enabled)
-  PP = PathPlanner(CP)
+  longitudinal_planner = Planner(CP)
+  lateral_planner = LateralPlanner(CP)
 
-  VM = VehicleModel(CP)
+  if sm is None:
+    sm = messaging.SubMaster(['carState', 'controlsState', 'radarState', 'modelV2'],
+                             poll=['radarState', 'modelV2'])
 
-  sm = messaging.SubMaster(['carState', 'controlsState', 'radarState', 'model', 'liveParameters'])
-
-  sm['liveParameters'].valid = True
-  sm['liveParameters'].sensorValid = True
-  sm['liveParameters'].steerRatio = CP.steerRatio
-  sm['liveParameters'].stiffnessFactor = 1.0
-  live_map_data = messaging.new_message()
-  live_map_data.init('liveMapData')
+  if pm is None:
+    pm = messaging.PubMaster(['longitudinalPlan', 'liveLongitudinalMpc', 'lateralPlan', 'liveMpc'])
 
   while True:
     sm.update()
 
-    if sm.updated['model']:
-      PP.update(sm, CP, VM)
+    if sm.updated['modelV2']:
+      lateral_planner.update(sm, CP)
+      lateral_planner.publish(sm, pm)
     if sm.updated['radarState']:
-      PL.update(sm, CP, VM, PP, live_map_data.liveMapData)
-    # elif socket is live_map_data_sock:
-    #   live_map_data = msg
+      longitudinal_planner.update(sm, CP)
+      longitudinal_planner.publish(sm, pm)
 
 
-def main(gctx=None):
-  plannerd_thread()
+def main(sm=None, pm=None):
+  plannerd_thread(sm, pm)
 
 
 if __name__ == "__main__":
