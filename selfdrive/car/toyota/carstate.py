@@ -91,7 +91,7 @@ class CarState(CarStateBase):
       #                    2) zorro steer offset has not been computed
       if self.out_of_tolerance_counter < 10 and not self.needs_angle_offset_zss:
         #check if zorro steer is out of tolerance
-        if abs(self.stock_steer_value - self.zorro_steer_value) > 3.0:
+        if abs(self.stock_steer_value - self.zorro_steer_value) > 4.0:
           ret.steeringAngleDeg = self.stock_steer_value
           self.steertype = 1
           if self.cruise_active:
